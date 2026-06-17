@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Pro Web Audio Editor</title>
+    <!-- Wavesurfer.js -->
     <script src="https://unpkg.com/wavesurfer.js@7/dist/wavesurfer.min.js"></script>
     <script src="https://unpkg.com/wavesurfer.js@7/dist/plugins/regions.min.js"></script>
     <style>
@@ -105,7 +106,7 @@
     let wavesurfer;
     let wsRegions;
     let currentAudioBuffer = null;
-    let audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    let audioContext = null;
 
     const btnPlay = document.getElementById('btn-play');
     const btnTrim = document.getElementById('btn-trim');
@@ -125,20 +126,34 @@
         height: 150,
     });
 
-    // Initialize Regions Plugin
-    wsRegions = wavesurfer.registerPlugin(WaveSurfer.Plugins.Regions.create());
+    // Initialize Regions Plugin (Fixed initialization for v7)
+    wsRegions = wavesurfer.registerPlugin(WaveSurfer.Regions.create());
     wsRegions.enableDragSelection({ color: 'rgba(59, 130, 246, 0.3)' });
 
     // Handle File Upload & Decoding
     document.getElementById('audio-file').addEventListener('change', async function(e) {
         const file = e.target.files[0];
-        if (file) {
-            statusText.innerText = "Loading and decoding audio...";
+        if (!file) return;
+
+        // Initialize AudioContext only after user interaction (Required for Apple Devices)
+        if (!audioContext) {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+
+        statusText.innerText = "Loading and decoding audio...";
+        
+        try {
             const arrayBuffer = await file.arrayBuffer();
             audioContext.decodeAudioData(arrayBuffer, (buffer) => {
                 currentAudioBuffer = buffer;
                 loadBufferIntoSurfer(buffer);
+            }, (err) => {
+                console.error(err);
+                statusText.innerText = "Error decoding audio file.";
             });
+        } catch (error) {
+            console.error(error);
+            statusText.innerText = "Error reading file.";
         }
     });
 
@@ -215,7 +230,7 @@
         const endFrame = Math.floor(endSec * sampleRate);
         const length = endFrame - startFrame;
 
-        const newCtx = new OfflineAudioContext(channels, length, sampleRate);
+        const newCtx = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(channels, length, sampleRate);
         const newBuffer = newCtx.createBuffer(channels, length, sampleRate);
 
         for (let i = 0; i < channels; i++) {
@@ -235,18 +250,16 @@
         const endFrame = Math.floor(endSec * sampleRate);
         const newLength = buffer.length - (endFrame - startFrame);
 
-        const newCtx = new OfflineAudioContext(channels, newLength, sampleRate);
+        const newCtx = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(channels, newLength, sampleRate);
         const newBuffer = newCtx.createBuffer(channels, newLength, sampleRate);
 
         for (let i = 0; i < channels; i++) {
             const channelData = buffer.getChannelData(i);
             const newChannelData = newBuffer.getChannelData(i);
             
-            // Copy part before deletion
             for (let j = 0; j < startFrame; j++) {
                 newChannelData[j] = channelData[j];
             }
-            // Copy part after deletion
             for (let j = endFrame; j < buffer.length; j++) {
                 newChannelData[startFrame + (j - endFrame)] = channelData[j];
             }
@@ -254,7 +267,6 @@
         return newBuffer;
     }
 
-    // Convert AudioBuffer to WAV format (Standard boilerplate)
     function bufferToWav(buffer) {
         const numOfChan = buffer.numberOfChannels;
         const length = buffer.length * numOfChan * 2 + 44;
@@ -264,20 +276,19 @@
         let offset = 0;
         let pos = 0;
 
-        // write WAV header
-        setUint32(0x46464952); // "RIFF"
-        setUint32(length - 8); // file length - 8
-        setUint32(0x45564157); // "WAVE"
-        setUint32(0x20746d66); // "fmt " chunk
-        setUint32(16);         // length = 16
-        setUint16(1);          // PCM (uncompressed)
+        setUint32(0x46464952); 
+        setUint32(length - 8); 
+        setUint32(0x45564157); 
+        setUint32(0x20746d66); 
+        setUint32(16);         
+        setUint16(1);          
         setUint16(numOfChan);
         setUint32(buffer.sampleRate);
-        setUint32(buffer.sampleRate * 2 * numOfChan); // avg. bytes/sec
-        setUint16(numOfChan * 2); // block-align
-        setUint16(16);         // 16-bit
-        setUint32(0x61746164); // "data" - chunk
-        setUint32(length - pos - 4); // chunk length
+        setUint32(buffer.sampleRate * 2 * numOfChan); 
+        setUint16(numOfChan * 2); 
+        setUint16(16);         
+        setUint32(0x61746164); 
+        setUint32(length - pos - 4); 
 
         for (let i = 0; i < buffer.numberOfChannels; i++) {
             channels.push(buffer.getChannelData(i));
@@ -295,14 +306,8 @@
 
         return new Blob([arrayBuffer], { type: 'audio/wav' });
 
-        function setUint16(data) {
-            view.setUint16(offset, data, true);
-            offset += 2;
-        }
-        function setUint32(data) {
-            view.setUint32(offset, data, true);
-            offset += 4;
-        }
+        function setUint16(data) { view.setUint16(offset, data, true); offset += 2; }
+        function setUint32(data) { view.setUint32(offset, data, true); offset += 4; }
     }
 </script>
 
