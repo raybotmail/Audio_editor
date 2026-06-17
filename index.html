@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pro Web Audio Editor</title>
+    <script src="https://unpkg.com/wavesurfer.js@7/dist/wavesurfer.min.js"></script>
+    <script src="https://unpkg.com/wavesurfer.js@7/dist/plugins/regions.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #121214;
+            color: #e2e8f0;
+            padding: 20px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .container {
+            background: #1a1a1e;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        }
+        h1 { text-align: center; color: #3b82f6; margin-top: 0; }
+        #waveform {
+            background: #26262b;
+            border-radius: 8px;
+            margin: 20px 0;
+            position: relative;
+        }
+        .controls, .export-controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            justify-content: center;
+            margin-top: 20px;
+        }
+        button, input[type="file"]::file-selector-button {
+            background: #3b82f6;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+        button:hover { background: #2563eb; }
+        button:disabled { background: #475569; cursor: not-allowed; }
+        #btn-export { background: #10b981; }
+        #btn-export:hover { background: #059669; }
+        .file-input-wrapper {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .instructions {
+            background: #26262b;
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            line-height: 1.5;
+            border-left: 4px solid #3b82f6;
+            margin-top: 30px;
+        }
+        .status {
+            text-align: center;
+            margin-top: 10px;
+            font-size: 0.9rem;
+            color: #94a3b8;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Web Audio Editor</h1>
+    
+    <div class="file-input-wrapper">
+        <input type="file" id="audio-file" accept="audio/*">
+    </div>
+
+    <div id="waveform"></div>
+    <div class="status" id="status-text">Ready to load audio.</div>
+
+    <div class="controls">
+        <button id="btn-play" disabled>Play / Pause</button>
+        <button id="btn-trim" disabled>Trim (Keep Selection)</button>
+        <button id="btn-delete" disabled>Cut (Delete Selection)</button>
+    </div>
+
+    <div class="export-controls">
+        <button id="btn-export" disabled>Download Edited Audio (WAV)</button>
+    </div>
+
+    <div class="instructions">
+        <strong>How to Edit:</strong><br>
+        1. Upload an audio file.<br>
+        2. <strong>Shift + Click and Drag</strong> on the waveform to select a region.<br>
+        3. Click <strong>Trim</strong> to keep only the highlighted part, or <strong>Cut</strong> to remove it.<br>
+        4. When you are happy with the sound, click <strong>Download</strong>.
+    </div>
+</div>
+
+<script>
+    let wavesurfer;
+    let wsRegions;
+    let currentAudioBuffer = null;
+    let audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+    const btnPlay = document.getElementById('btn-play');
+    const btnTrim = document.getElementById('btn-trim');
+    const btnDelete = document.getElementById('btn-delete');
+    const btnExport = document.getElementById('btn-export');
+    const statusText = document.getElementById('status-text');
+
+    // Initialize Wavesurfer
+    wavesurfer = WaveSurfer.create({
+        container: '#waveform',
+        waveColor: '#4f46e5',
+        progressColor: '#3b82f6',
+        cursorColor: '#f43f5e',
+        barWidth: 2,
+        barRadius: 3,
+        responsive: true,
+        height: 150,
+    });
+
+    // Initialize Regions Plugin
+    wsRegions = wavesurfer.registerPlugin(WaveSurfer.Plugins.Regions.create());
+    wsRegions.enableDragSelection({ color: 'rgba(59, 130, 246, 0.3)' });
+
+    // Handle File Upload & Decoding
+    document.getElementById('audio-file').addEventListener('change', async function(e) {
+        const file = e.target.files[0];
+        if (file) {
+            statusText.innerText = "Loading and decoding audio...";
+            const arrayBuffer = await file.arrayBuffer();
+            audioContext.decodeAudioData(arrayBuffer, (buffer) => {
+                currentAudioBuffer = buffer;
+                loadBufferIntoSurfer(buffer);
+            });
+        }
+    });
+
+    // Load an AudioBuffer into Wavesurfer
+    function loadBufferIntoSurfer(buffer) {
+        const wavBlob = bufferToWav(buffer);
+        const url = URL.createObjectURL(wavBlob);
+        wavesurfer.load(url);
+        wsRegions.clearRegions();
+        
+        btnPlay.disabled = false;
+        btnTrim.disabled = false;
+        btnDelete.disabled = false;
+        btnExport.disabled = false;
+        statusText.innerText = "Audio loaded. Shift+Drag to select regions.";
+    }
+
+    // Controls
+    btnPlay.addEventListener('click', () => wavesurfer.playPause());
+
+    wsRegions.on('region-created', (region) => {
+        const regions = wsRegions.getRegions();
+        if (regions.length > 1) regions[0].remove(); // Keep only one region
+    });
+
+    // Trim (Keep only selection)
+    btnTrim.addEventListener('click', () => {
+        const regions = wsRegions.getRegions();
+        if (regions.length === 0) return alert('Shift+Drag to select an area first!');
+        
+        statusText.innerText = "Processing edit...";
+        const start = regions[0].start;
+        const end = regions[0].end;
+        
+        const newBuffer = sliceAudioBuffer(currentAudioBuffer, start, end);
+        currentAudioBuffer = newBuffer;
+        loadBufferIntoSurfer(newBuffer);
+    });
+
+    // Cut (Delete selection)
+    btnDelete.addEventListener('click', () => {
+        const regions = wsRegions.getRegions();
+        if (regions.length === 0) return alert('Shift+Drag to select an area first!');
+        
+        statusText.innerText = "Processing edit...";
+        const start = regions[0].start;
+        const end = regions[0].end;
+        
+        const newBuffer = deleteFromAudioBuffer(currentAudioBuffer, start, end);
+        currentAudioBuffer = newBuffer;
+        loadBufferIntoSurfer(newBuffer);
+    });
+
+    // Export to File
+    btnExport.addEventListener('click', () => {
+        if (!currentAudioBuffer) return;
+        const wavBlob = bufferToWav(currentAudioBuffer);
+        const url = URL.createObjectURL(wavBlob);
+        const a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = url;
+        a.download = 'edited_audio.wav';
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+    });
+
+    // --- Audio Processing Logic ---
+
+    function sliceAudioBuffer(buffer, startSec, endSec) {
+        const sampleRate = buffer.sampleRate;
+        const channels = buffer.numberOfChannels;
+        const startFrame = Math.floor(startSec * sampleRate);
+        const endFrame = Math.floor(endSec * sampleRate);
+        const length = endFrame - startFrame;
+
+        const newCtx = new OfflineAudioContext(channels, length, sampleRate);
+        const newBuffer = newCtx.createBuffer(channels, length, sampleRate);
+
+        for (let i = 0; i < channels; i++) {
+            const channelData = buffer.getChannelData(i);
+            const newChannelData = newBuffer.getChannelData(i);
+            for (let j = 0; j < length; j++) {
+                newChannelData[j] = channelData[startFrame + j];
+            }
+        }
+        return newBuffer;
+    }
+
+    function deleteFromAudioBuffer(buffer, startSec, endSec) {
+        const sampleRate = buffer.sampleRate;
+        const channels = buffer.numberOfChannels;
+        const startFrame = Math.floor(startSec * sampleRate);
+        const endFrame = Math.floor(endSec * sampleRate);
+        const newLength = buffer.length - (endFrame - startFrame);
+
+        const newCtx = new OfflineAudioContext(channels, newLength, sampleRate);
+        const newBuffer = newCtx.createBuffer(channels, newLength, sampleRate);
+
+        for (let i = 0; i < channels; i++) {
+            const channelData = buffer.getChannelData(i);
+            const newChannelData = newBuffer.getChannelData(i);
+            
+            // Copy part before deletion
+            for (let j = 0; j < startFrame; j++) {
+                newChannelData[j] = channelData[j];
+            }
+            // Copy part after deletion
+            for (let j = endFrame; j < buffer.length; j++) {
+                newChannelData[startFrame + (j - endFrame)] = channelData[j];
+            }
+        }
+        return newBuffer;
+    }
+
+    // Convert AudioBuffer to WAV format (Standard boilerplate)
+    function bufferToWav(buffer) {
+        const numOfChan = buffer.numberOfChannels;
+        const length = buffer.length * numOfChan * 2 + 44;
+        const arrayBuffer = new ArrayBuffer(length);
+        const view = new DataView(arrayBuffer);
+        const channels = [];
+        let offset = 0;
+        let pos = 0;
+
+        // write WAV header
+        setUint32(0x46464952); // "RIFF"
+        setUint32(length - 8); // file length - 8
+        setUint32(0x45564157); // "WAVE"
+        setUint32(0x20746d66); // "fmt " chunk
+        setUint32(16);         // length = 16
+        setUint16(1);          // PCM (uncompressed)
+        setUint16(numOfChan);
+        setUint32(buffer.sampleRate);
+        setUint32(buffer.sampleRate * 2 * numOfChan); // avg. bytes/sec
+        setUint16(numOfChan * 2); // block-align
+        setUint16(16);         // 16-bit
+        setUint32(0x61746164); // "data" - chunk
+        setUint32(length - pos - 4); // chunk length
+
+        for (let i = 0; i < buffer.numberOfChannels; i++) {
+            channels.push(buffer.getChannelData(i));
+        }
+
+        while (pos < buffer.length) {
+            for (let i = 0; i < numOfChan; i++) {
+                let sample = Math.max(-1, Math.min(1, channels[i][pos]));
+                sample = (0.5 + sample < 0 ? sample * 32768 : sample * 32767) | 0;
+                view.setInt16(offset, sample, true);
+                offset += 2;
+            }
+            pos++;
+        }
+
+        return new Blob([arrayBuffer], { type: 'audio/wav' });
+
+        function setUint16(data) {
+            view.setUint16(offset, data, true);
+            offset += 2;
+        }
+        function setUint32(data) {
+            view.setUint32(offset, data, true);
+            offset += 4;
+        }
+    }
+</script>
+
+</body>
+</html>
